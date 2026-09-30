@@ -25,6 +25,11 @@ export interface RecheckDiff {
   /** 无法匹配时的缺失原因 */
   missingReason: string;
   generatedAt: number;
+  /**
+   * 保存时的内容版本（含样地面积/期次与相关样木量测指纹）。
+   * 样地面积、复查期次或样木变化后重算不一致即判定失效，移入 staleRechecks 待重算。
+   */
+  contentRev?: string;
 }
 
 export type RecheckDiffDraft = Omit<RecheckDiff, 'id' | 'generatedAt'>;

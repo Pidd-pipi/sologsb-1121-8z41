@@ -19,6 +19,7 @@ import { usePlotStore } from '../stores/plotStore';
 import { useRegenStore } from '../stores/regenStore';
 import { useTreeStore } from '../stores/treeStore';
 import { useTreeStats } from '../hooks/useTreeStats';
+import { loadStaleRechecks } from '../utils/db';
 import RoundTag from '../components/common/RoundTag';
 import PlotCard from '../components/common/PlotCard';
 import { canopyFromCrown, formHeight, heightClassStats } from '../utils/forestCalc';
@@ -43,6 +44,18 @@ export default function PlotSummary() {
   const stats = useTreeStats(plotId);
 
   const [toast, setToast] = useState('');
+  const [staleCount, setStaleCount] = useState(0);
+
+  useEffect(() => {
+    if (!plotId) return;
+    let alive = true;
+    void loadStaleRechecks(plotId).then((rows) => {
+      if (alive) setStaleCount(rows.length);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [plotId, plot?.area, plot?.surveyRound, trees.length, regens.length]);
 
   useEffect(() => {
     if (!toast) return;
@@ -149,6 +162,13 @@ export default function PlotSummary() {
       </Space>
 
       {toast ? <Alert type="success" showIcon message={toast} closable onClose={() => setToast('')} /> : null}
+      {staleCount > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`样地面积/复查期次或样木量测变化后，有 ${staleCount} 条历史复查比对已失效；本页林分因子始终按合并后的最新数据实时重算，请回复查比对页重新生成并保存。`}
+        />
+      ) : null}
 
       <Row gutter={12}>
         <Col span={8}>

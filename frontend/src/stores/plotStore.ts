@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { db } from '../utils/db';
+import { db, invalidateRechecks } from '../utils/db';
 import { newId } from '../utils/id';
 import type { Plot, PlotDraft } from '../types/plot';
 
@@ -27,8 +27,20 @@ export const usePlotStore = create<PlotState>((set, get) => ({
     return record;
   },
   async update(id, patch) {
+    // 样地面积或复查期次改动后，相关复查比对结果必须失效重算
+    const before = get().items.find((it) => it.id === id);
+    const areaChanged = patch.area !== undefined && before && patch.area !== before.area;
+    const roundChanged = patch.surveyRound !== undefined && before && patch.surveyRound !== before.surveyRound;
     await db.plots.update(id, patch);
     set({ items: get().items.map((it) => (it.id === id ? { ...it, ...patch } : it)) });
+    if (areaChanged || roundChanged) {
+      await invalidateRechecks(
+        id,
+        areaChanged
+          ? '样地面积已修改，依赖面积的比对与林分汇总失效，待重新生成'
+          : '样地复查期次已修改，历史比对结果失效，待重新生成',
+      );
+    }
   },
   async toggleLock(id) {
     const target = get().items.find((it) => it.id === id);

@@ -18,13 +18,13 @@ import {
   Tag,
   Typography,
 } from 'antd';
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { PlusOutlined, ReloadOutlined, EditOutlined } from '@ant-design/icons';
 import { usePlotStore } from '../stores/plotStore';
 import { useTreeStore } from '../stores/treeStore';
 import { useRegenStore } from '../stores/regenStore';
 import { usePlotFilter } from '../hooks/usePlotFilter';
 import PlotCard from '../components/common/PlotCard';
-import { FOREST_TYPES, PLOT_SHAPES, type PlotDraft, type PlotShape } from '../types/plot';
+import { FOREST_TYPES, PLOT_SHAPES, type Plot, type PlotDraft, type PlotShape } from '../types/plot';
 
 const EMPTY: PlotDraft = {
   plotNo: '',
@@ -50,12 +50,14 @@ export default function PlotList() {
   const navigate = useNavigate();
   const plots = usePlotStore((s) => s.items);
   const addPlot = usePlotStore((s) => s.add);
+  const updatePlot = usePlotStore((s) => s.update);
   const toggleLock = usePlotStore((s) => s.toggleLock);
   const trees = useTreeStore((s) => s.items);
   const regens = useRegenStore((s) => s.items);
   const { filters, patch, reset, result, options } = usePlotFilter();
 
   const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<PlotDraft>(EMPTY);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
@@ -72,17 +74,61 @@ export default function PlotList() {
     return Math.round((plots.reduce((s, p) => s + p.canopyDensity, 0) / plots.length) * 100) / 100;
   }, [plots]);
 
+  const openCreate = () => {
+    setEditingId(null);
+    setDraft(EMPTY);
+    setError('');
+    setOpen(true);
+  };
+
+  const openEdit = (plot: Plot) => {
+    setEditingId(plot.id);
+    setDraft({
+      plotNo: plot.plotNo,
+      locality: plot.locality,
+      lng: plot.lng,
+      lat: plot.lat,
+      shape: plot.shape,
+      area: plot.area,
+      elevation: plot.elevation,
+      slope: plot.slope,
+      aspect: plot.aspect,
+      forestType: plot.forestType,
+      canopyDensity: plot.canopyDensity,
+      dominantSpecies: plot.dominantSpecies,
+      surveyRound: plot.surveyRound,
+      surveyedAt: plot.surveyedAt,
+      crew: plot.crew,
+      locked: plot.locked,
+    });
+    setError('');
+    setOpen(true);
+  };
+
   const submit = async () => {
     if (!draft.plotNo.trim()) {
       setError('样地号必填');
       return;
     }
-    if (plots.some((p) => p.plotNo === draft.plotNo.trim())) {
+    if (
+      plots.some((p) => p.plotNo === draft.plotNo.trim() && (editingId === null || p.id !== editingId))
+    ) {
       setError('样地号已存在，请更换');
       return;
     }
     if (draft.canopyDensity < 0 || draft.canopyDensity > 1) {
       setError('郁闭度需在 0 ~ 1 之间');
+      return;
+    }
+    if (editingId) {
+      const before = plots.find((p) => p.id === editingId);
+      await updatePlot(editingId, { ...draft, plotNo: draft.plotNo.trim() });
+      setOpen(false);
+      setEditingId(null);
+      setError('');
+      const areaNote = before && before.area !== draft.area ? '样地面积已改，相关比对与林分汇总已失效重算' : '';
+      const roundNote = before && before.surveyRound !== draft.surveyRound ? '复查期次已改，历史比对已失效' : '';
+      setToast([`已更新样地「${draft.plotNo.trim()}」`, areaNote, roundNote].filter(Boolean).join('；'));
       return;
     }
     const created = await addPlot({ ...draft, plotNo: draft.plotNo.trim(), surveyedAt: Date.now() });
@@ -101,7 +147,7 @@ export default function PlotList() {
         <Tag>共 {plots.length} 个样地</Tag>
         <Tag color="blue">筛选命中 {result.length} 个</Tag>
         <div style={{ flex: 1 }} />
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
           新建样地
         </Button>
       </Space>
@@ -216,6 +262,9 @@ export default function PlotList() {
                     <Button size="small" type="link" onClick={() => navigate(`/summary/${plot.id}`)}>
                       林分汇总
                     </Button>
+                    <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(plot)}>
+                      编辑
+                    </Button>
                     <Button size="small" danger={!plot.locked} onClick={() => toggleLock(plot.id)}>
                       {plot.locked ? '解锁往期' : '锁定往期'}
                     </Button>
@@ -229,10 +278,13 @@ export default function PlotList() {
 
       <Modal
         open={open}
-        title="新建固定样地"
-        onCancel={() => setOpen(false)}
+        title={editingId ? '编辑固定样地（改面积/复查期次会使相关比对失效重算）' : '新建固定样地'}
+        onCancel={() => {
+          setOpen(false);
+          setEditingId(null);
+        }}
         onOk={submit}
-        okText="保存样地"
+        okText={editingId ? '保存修改' : '保存样地'}
         width={680}
       >
         <Space direction="vertical" size={10} style={{ width: '100%', marginTop: 8 }}>

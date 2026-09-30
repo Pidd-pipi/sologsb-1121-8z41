@@ -14,6 +14,11 @@ body {
   background: #fff1f0 !important;
 }
 
+/* 冲突并排比较：两边不一致的字段行 */
+.compare-row-differ > td {
+  background: #fffbe6 !important;
+}
+
 .app-content {
   padding: 16px 20px 40px;
 }

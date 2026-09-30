@@ -3,17 +3,45 @@ import type { Plot } from '../types/plot';
 import type { TreeRecord } from '../types/tree';
 import type { RegenShrub } from '../types/regen';
 import type { RecheckDiff } from '../types/recheck';
+import type { PackageKind } from '../types/sync';
+import { recheckRev } from '../types/sync';
 import { newId } from './id';
 
 export const DB_NAME = 'gbforestplot';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbforestplot:db-version';
+export const LS_STATION_KEY = 'gbforestplot:station';
+
+/** 已导入作业包台账（按包内容哈希去重，保证重复导入不重复计数） */
+export interface ImportLedgerEntry {
+  packId: string;
+  kind: PackageKind;
+  station: string;
+  importedAt: number;
+  added: number;
+  updated: number;
+  skipped: number;
+}
+
+/** 已失效、待重算的复查比对结果（样地面积/期次或样木量测变化后写入） */
+export interface StaleRecheck {
+  /** 即原 recheck 行 id */
+  id: string;
+  plotId: string;
+  baseRound: number;
+  targetRound: number;
+  treeNo: string;
+  invalidatedAt: number;
+  reason: string;
+}
 
 class ForestPlotDB extends Dexie {
   plots!: Table<Plot, string>;
   trees!: Table<TreeRecord, string>;
   regens!: Table<RegenShrub, string>;
   rechecks!: Table<RecheckDiff, string>;
+  importLedger!: Table<ImportLedgerEntry, string>;
+  staleRechecks!: Table<StaleRecheck, string>;
 
   constructor() {
     super(DB_NAME);
@@ -46,6 +74,15 @@ class ForestPlotDB extends Dexie {
             if (row.measuredAt === undefined) row.measuredAt = Date.now();
           });
       });
+    // v3：断网作业包合并——导入台账（幂等）+ 失效复查结果登记表
+    this.version(3).stores({
+      plots: 'id, plotNo, locality, forestType, surveyRound, locked, createdAt',
+      trees: 'id, plotId, treeNo, species, round, status, measuredAt',
+      regens: 'id, plotId, layer, species, round, heightCm',
+      rechecks: 'id, plotId, baseRound, targetRound, treeNo, generatedAt',
+      importLedger: 'packId, importedAt',
+      staleRechecks: 'id, plotId, baseRound, targetRound, invalidatedAt',
+    });
   }
 }
 
@@ -75,6 +112,126 @@ export async function saveRecheckDiffs(diffs: RecheckDiff[]): Promise<void> {
 export async function loadRecheckDiffs(plotId: string): Promise<RecheckDiff[]> {
   const rows = await db.rechecks.where('plotId').equals(plotId).toArray();
   return rows.sort((a, b) => a.treeNo.localeCompare(b.treeNo));
+}
+
+/** 站端标识：同一浏览器稳定，用于作业包来源展示 */
+export function getStationId(): string {
+  try {
+    let id = window.localStorage.getItem(LS_STATION_KEY);
+    if (!id) {
+      id = `station-${Math.random().toString(36).slice(2, 8)}`;
+      window.localStorage.setItem(LS_STATION_KEY, id);
+    }
+    return id;
+  } catch {
+    return 'station-unknown';
+  }
+}
+
+/* ---------------- 导入台账（幂等） ---------------- */
+
+export async function hasImport(packId: string): Promise<boolean> {
+  return (await db.importLedger.get(packId)) !== undefined;
+}
+
+export async function recordImport(entry: ImportLedgerEntry): Promise<void> {
+  await db.importLedger.put(entry);
+}
+
+export async function listImports(): Promise<ImportLedgerEntry[]> {
+  return db.importLedger.orderBy('importedAt').reverse().toArray();
+}
+
+/* ---------------- 失效复查结果登记 ---------------- */
+
+/**
+ * 将某样地（可缩窄到指定期次对）的已保存比对结果移入 staleRechecks 并从档案库删除。
+ * 触发时机：样地面积 / 复查期次改动，或相关样木量测值变化，或合并带入这些变化。
+ * 返回失效的条数。
+ */
+export async function invalidateRechecks(
+  plotId: string,
+  reason: string,
+  rounds?: { baseRound: number; targetRound: number },
+): Promise<number> {
+  const now = Date.now();
+  let moved = 0;
+  await db.transaction('rw', db.rechecks, db.staleRechecks, async () => {
+    let rows = await db.rechecks.where('plotId').equals(plotId).toArray();
+    if (rounds) {
+      rows = rows.filter(
+        (r) => r.baseRound === rounds.baseRound && r.targetRound === rounds.targetRound,
+      );
+    }
+    if (rows.length === 0) return;
+    moved = rows.length;
+    await db.staleRechecks.bulkPut(
+      rows.map((r) => ({
+        id: r.id,
+        plotId: r.plotId,
+        baseRound: r.baseRound,
+        targetRound: r.targetRound,
+        treeNo: r.treeNo,
+        invalidatedAt: now,
+        reason,
+      })),
+    );
+    await db.rechecks.bulkDelete(rows.map((r) => r.id));
+  });
+  return moved;
+}
+
+export async function loadStaleRechecks(plotId: string): Promise<StaleRecheck[]> {
+  return db.staleRechecks.where('plotId').equals(plotId).reverse().sortBy('invalidatedAt');
+}
+
+/**
+ * 按内容指纹复核某样地已保存的比对结果：凡是保存时版本（contentRev）
+ * 与当前样地面积/期次、相关样木量测重算不一致的，移入 staleRechecks 待重算。
+ * 没有 contentRev 的旧档案（v3 升级前）不主动失效。
+ * 用于样木量测改动与作业包合并后，只让真正过期的比对/汇总失效。
+ */
+export async function revalidatePlotRechecks(plotId: string, reason: string): Promise<number> {
+  const [plot, rows, trees] = await Promise.all([
+    db.plots.get(plotId),
+    db.rechecks.where('plotId').equals(plotId).toArray(),
+    db.trees.where('plotId').equals(plotId).toArray(),
+  ]);
+  if (!plot || rows.length === 0) return 0;
+  const now = Date.now();
+  const stale: StaleRecheck[] = [];
+  rows.forEach((r) => {
+    if (r.contentRev && r.contentRev !== recheckRev(r, plot, trees)) {
+      stale.push({
+        id: r.id,
+        plotId: r.plotId,
+        baseRound: r.baseRound,
+        targetRound: r.targetRound,
+        treeNo: r.treeNo,
+        invalidatedAt: now,
+        reason,
+      });
+    }
+  });
+  if (stale.length === 0) return 0;
+  await db.transaction('rw', db.rechecks, db.staleRechecks, async () => {
+    await db.staleRechecks.bulkPut(stale);
+    await db.rechecks.bulkDelete(stale.map((s) => s.id));
+  });
+  return stale.length;
+}
+
+/** 重新生成并保存某期次对的比对结果后，清除对应的失效登记 */
+export async function clearStaleRechecks(
+  plotId: string,
+  baseRound: number,
+  targetRound: number,
+): Promise<void> {
+  const rows = await db.staleRechecks.where('plotId').equals(plotId).toArray();
+  const ids = rows
+    .filter((r) => r.baseRound === baseRound && r.targetRound === targetRound)
+    .map((r) => r.id);
+  if (ids.length > 0) await db.staleRechecks.bulkDelete(ids);
 }
 
 /** 首次进入灌入示范样地与两期样木数据 */

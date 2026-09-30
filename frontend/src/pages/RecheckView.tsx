@@ -6,8 +6,15 @@ import { usePlotStore } from '../stores/plotStore';
 import { useTreeStore } from '../stores/treeStore';
 import GrowthDiffTable from '../components/common/GrowthDiffTable';
 import RoundTag from '../components/common/RoundTag';
-import { loadRecheckDiffs, saveRecheckDiffs } from '../utils/db';
+import {
+  clearStaleRechecks,
+  loadRecheckDiffs,
+  loadStaleRechecks,
+  saveRecheckDiffs,
+  type StaleRecheck,
+} from '../utils/db';
 import { newId } from '../utils/id';
+import { recheckRev } from '../types/sync';
 import { growthRate, isDiffAbnormal, type RecheckDiff } from '../types/recheck';
 import type { TreeRecord } from '../types/tree';
 
@@ -29,6 +36,7 @@ export default function RecheckView() {
   const [baseRound, setBaseRound] = useState<number>(rounds[0] ?? 1);
   const [targetRound, setTargetRound] = useState<number>(rounds[rounds.length - 1] ?? 2);
   const [diffs, setDiffs] = useState<RecheckDiff[]>([]);
+  const [stale, setStale] = useState<StaleRecheck[]>([]);
   const [toast, setToast] = useState('');
   const [error, setError] = useState('');
 
@@ -41,9 +49,15 @@ export default function RecheckView() {
 
   useEffect(() => {
     if (!id) return;
-    void loadRecheckDiffs(id).then((rows) => {
+    let alive = true;
+    void Promise.all([loadRecheckDiffs(id), loadStaleRechecks(id)]).then(([rows, staleRows]) => {
+      if (!alive) return;
       if (rows.length > 0) setDiffs(rows);
+      setStale(staleRows);
     });
+    return () => {
+      alive = false;
+    };
   }, [id]);
 
   useEffect(() => {
@@ -67,6 +81,7 @@ export default function RecheckView() {
       a.localeCompare(b, 'zh-Hans-CN', { numeric: true }),
     );
 
+    const plotTrees = trees.filter((t) => t.plotId === id);
     const next: RecheckDiff[] = allNos.map((treeNo) => {
       const b = baseMap.get(treeNo);
       const t = targetMap.get(treeNo);
@@ -78,7 +93,7 @@ export default function RecheckView() {
         b && t ? r2(t.heightM - b.heightM) : 0;
       const statusChange = b && t && b.status !== t.status ? `${b.status} → ${t.status}` : '';
       const missingReason = !t ? '本期未复测（疑似采伐或倒伏）' : !b ? '本期新增进界木' : '';
-      return {
+      const diff: RecheckDiff = {
         id: newId('diff'),
         plotId: id,
         baseRound,
@@ -95,10 +110,15 @@ export default function RecheckView() {
         missingReason,
         generatedAt: Date.now(),
       };
+      // 盖内容指纹：纳入样地面积/期次与相关样木量测，供后续失效判定
+      return { ...diff, contentRev: recheckRev(diff, plot, plotTrees) };
     });
 
     setDiffs(next);
     setError('');
+    setStale((prev) =>
+      prev.filter((s) => !(s.baseRound === baseRound && s.targetRound === targetRound)),
+    );
     setToast(`已生成第 ${baseRound} 期 → 第 ${targetRound} 期的逐株比对表，共 ${next.length} 条`);
   };
 
@@ -108,7 +128,11 @@ export default function RecheckView() {
       return;
     }
     await saveRecheckDiffs(diffs);
-    setToast(`逐株比对表已写入本地档案库（${diffs.length} 条）`);
+    await clearStaleRechecks(id, baseRound, targetRound);
+    setStale((prev) =>
+      prev.filter((s) => !(s.baseRound === baseRound && s.targetRound === targetRound)),
+    );
+    setToast(`逐株比对表已写入本地档案库（${diffs.length} 条），失效登记已清除`);
   };
 
   const abnormal = diffs.filter(isDiffAbnormal).length;
@@ -152,6 +176,31 @@ export default function RecheckView() {
 
       {toast ? <Alert type="success" showIcon message={toast} closable onClose={() => setToast('')} /> : null}
       {error ? <Alert type="error" showIcon message={error} closable onClose={() => setError('')} /> : null}
+
+      {stale.length > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`有 ${stale.length} 条历史比对结果因样地面积/复查期次或样木量测变化已失效，请选择对应期次重新生成`}
+          description={
+            <Space direction="vertical" size={2}>
+              {Array.from(
+                stale
+                  .reduce((m, s) => {
+                    const key = `${s.baseRound}->${s.targetRound}`;
+                    if (!m.has(key)) m.set(key, { rounds: key, reason: s.reason });
+                    return m;
+                  }, new Map<string, { rounds: string; reason: string }>())
+                  .values(),
+              ).map((s) => (
+                <Typography.Text key={s.rounds} type="secondary">
+                  第 {s.rounds.replace('->', ' → ')} 期比对：{s.reason}
+                </Typography.Text>
+              ))}
+            </Space>
+          }
+        />
+      ) : null}
 
       <Card size="small">
         <Space wrap size={10}>
