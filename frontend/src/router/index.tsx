@@ -11,6 +11,7 @@ import TreeEntry from '../pages/TreeEntry';
 import RegenView from '../pages/RegenView';
 import RecheckView from '../pages/RecheckView';
 import PlotSummary from '../pages/PlotSummary';
+import ImportPackage from '../pages/ImportPackage';
 
 const { Header, Content } = Layout;
 
@@ -65,6 +66,7 @@ function Shell() {
         <Routes>
           <Route path="/" element={<Navigate to="/plots" replace />} />
           <Route path="/plots" element={<PlotList />} />
+          <Route path="/import" element={<ImportPackage />} />
           <Route path="/plots/:id/trees" element={<TreeEntry />} />
           <Route path="/plots/:id/regen" element={<RegenView />} />
           <Route path="/plots/:id/recheck" element={<RecheckView />} />

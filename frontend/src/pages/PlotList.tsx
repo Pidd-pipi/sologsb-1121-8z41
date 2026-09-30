@@ -18,7 +18,7 @@ import {
   Tag,
   Typography,
 } from 'antd';
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { PlusOutlined, ReloadOutlined, ImportOutlined } from '@ant-design/icons';
 import { usePlotStore } from '../stores/plotStore';
 import { useTreeStore } from '../stores/treeStore';
 import { useRegenStore } from '../stores/regenStore';
@@ -101,6 +101,9 @@ export default function PlotList() {
         <Tag>共 {plots.length} 个样地</Tag>
         <Tag color="blue">筛选命中 {result.length} 个</Tag>
         <div style={{ flex: 1 }} />
+        <Button icon={<ImportOutlined />} onClick={() => navigate('/import')}>
+          导入作业包
+        </Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
           新建样地
         </Button>

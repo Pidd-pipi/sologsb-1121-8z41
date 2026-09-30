@@ -6,7 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview --port 5173"
+    "preview": "vite preview --port 5173",
+    "test": "npm run test:logic && npm run test:tx && npm run test:ui",
+    "test:logic": "esbuild scripts/test-merge.ts --bundle --platform=node --format=esm --outfile=scripts/test-merge.mjs --log-level=warning && node scripts/test-merge.mjs",
+    "test:tx": "esbuild scripts/test-merge-tx.ts --bundle --platform=node --format=esm --outfile=scripts/test-merge-tx.mjs --log-level=warning && node scripts/test-merge-tx.mjs",
+    "test:ui": "esbuild scripts/test-merge-ui.ts --bundle --platform=node --format=cjs --outfile=scripts/test-merge-ui.cjs --external:jsdom --log-level=warning && node scripts/test-merge-ui.cjs"
   },
   "dependencies": {
     "@ant-design/icons": "^5.5.1",
@@ -21,6 +25,8 @@
     "@types/react": "^18.3.10",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^29.1.1",
     "typescript": "^5.6.2",
     "vite": "^5.4.8"
   }
